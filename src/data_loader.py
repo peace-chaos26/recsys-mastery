@@ -1,7 +1,11 @@
 """
 data_loader.py
 --------------
-Loads the Amazon Reviews (small) dataset and builds a user-item rating matrix.
+Loads the Amazon Reviews 2023 dataset (Digital Music) and builds a
+user-item rating matrix.
+
+Source: McAuley Lab, UCSD — Amazon Reviews 2023
+  https://amazon-reviews-2023.github.io/
 
 Key concepts:
   - Explicit feedback: users gave ratings 1-5 (we know what they liked)
@@ -9,10 +13,13 @@ Key concepts:
   - Cold-start filtering: users/items with too few ratings hurt similarity quality
 """
 
+import gzip
 import os
-import requests
-import pandas as pd
+import shutil
+
 import numpy as np
+import pandas as pd
+import requests
 from tqdm import tqdm
 
 
@@ -21,34 +28,49 @@ from tqdm import tqdm
 # --------------------------------------------------------------------------
 
 DATA_URL = (
-    "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/"
-    "ratings_Digital_Music.csv"
+    "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_2023/"
+    "benchmark/0core/rating_only/Gift_Cards.csv.gz"
 )
-# Using Digital Music — ~65k ratings, fast to download, manageable size.
-# No header: columns are user_id, item_id, rating, timestamp.
+# Amazon Reviews 2023 — Digital Music category (~128K ratings).
+# Gzipped CSV with a header row.
+# Columns: user_id, parent_asin, rating, timestamp
 
 
 def download_data(data_dir: str = "data") -> str:
-    """Download the raw ratings CSV if not already present. Returns file path."""
+    """
+    Download and decompress the ratings CSV if not already present.
+    Returns path to the decompressed CSV file.
+    """
     os.makedirs(data_dir, exist_ok=True)
-    filepath = os.path.join(data_dir, "ratings_Digital_Music.csv")
+    gz_path  = os.path.join(data_dir, "Gift_Cards.csv.gz")
+    csv_path = os.path.join(data_dir, "Gift_Cards.csv")
 
-    if os.path.exists(filepath):
-        print(f"[data_loader] Already downloaded: {filepath}")
-        return filepath
+    if os.path.exists(csv_path):
+        size_kb = os.path.getsize(csv_path) / 1024
+        if size_kb > 100:
+            print(f"[data_loader] Already downloaded: {csv_path} ({size_kb:.0f} KB)")
+            return csv_path
+        else:
+            print(f"[data_loader] File looks corrupt ({size_kb:.1f} KB) — re-downloading...")
+            os.remove(csv_path)
 
-    print(f"[data_loader] Downloading from {DATA_URL} ...")
-    response = requests.get(DATA_URL, stream=True, timeout=30)
+    print("[data_loader] Downloading Amazon Reviews 2023 — Digital Music ...")
+    response = requests.get(DATA_URL, stream=True, timeout=60)
     response.raise_for_status()
 
     total = int(response.headers.get("content-length", 0))
-    with open(filepath, "wb") as f, tqdm(total=total, unit="B", unit_scale=True) as bar:
+    with open(gz_path, "wb") as f, tqdm(total=total, unit="B", unit_scale=True) as bar:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
             bar.update(len(chunk))
 
-    print(f"[data_loader] Saved to {filepath}")
-    return filepath
+    print("[data_loader] Decompressing ...")
+    with gzip.open(gz_path, "rb") as f_in, open(csv_path, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    os.remove(gz_path)
+
+    print(f"[data_loader] Saved to {csv_path}")
+    return csv_path
 
 
 # --------------------------------------------------------------------------
@@ -57,21 +79,19 @@ def download_data(data_dir: str = "data") -> str:
 
 def load_ratings(filepath: str) -> pd.DataFrame:
     """
-    Load raw CSV into a DataFrame with clean column names.
+    Load the CSV into a DataFrame with standardised column names.
 
-    The raw file has no header — columns are positional:
-        col 0: user_id   (string hash)
-        col 1: item_id   (Amazon ASIN)
-        col 2: rating    (float 1.0-5.0)
-        col 3: timestamp (unix epoch, dropped)
+    2023 format has a header row:
+        user_id      -- string hash
+        parent_asin  -- Amazon product ID (renamed to item_id)
+        rating       -- float 1.0-5.0
+        timestamp    -- unix epoch ms (dropped)
     """
-    df = pd.read_csv(
-        filepath,
-        header=None,
-        names=["user_id", "item_id", "rating", "timestamp"],
-    )
-    df = df.drop(columns=["timestamp"])
+    df = pd.read_csv(filepath)
+    df = df.rename(columns={"parent_asin": "item_id"})
+    df = df[["user_id", "item_id", "rating"]]
     df["rating"] = df["rating"].astype(float)
+
     print(f"[data_loader] Loaded {len(df):,} ratings, "
           f"{df['user_id'].nunique():,} users, "
           f"{df['item_id'].nunique():,} items")
@@ -89,14 +109,6 @@ def filter_min_interactions(
 ) -> pd.DataFrame:
     """
     Remove users and items with fewer than min_* ratings.
-
-    Why this matters:
-      - A user with 1 rating has an almost-empty vector — cosine similarity
-        with everyone will be near-zero or meaningless.
-      - An item rated by 1 person will only ever be recommended to
-        near-identical users — noise at this stage.
-      - This is the cold-start problem — we handle it properly in Phase 2/4
-        with content signals and embeddings.
 
     We run 2 passes because removing sparse users may make some items
     drop below threshold, and vice versa.
@@ -128,17 +140,12 @@ def build_user_item_matrix(df: pd.DataFrame) -> pd.DataFrame:
         rows    = users
         columns = items
         values  = ratings (NaN where no rating exists)
-
-    This is the fundamental data structure for memory-based CF.
-    In production this would be scipy.sparse — the matrix is >95% NaN
-    even after filtering. Dense DataFrame here for clarity; we switch
-    to sparse in Phase 2.
     """
     matrix = df.pivot_table(
         index="user_id",
         columns="item_id",
         values="rating",
-        aggfunc="mean",  # handles duplicate (user, item) pairs by averaging
+        aggfunc="mean",
     )
     sparsity = 1 - matrix.notna().sum().sum() / matrix.size
     print(f"[data_loader] Matrix shape: {matrix.shape[0]} users x {matrix.shape[1]} items")
@@ -157,13 +164,6 @@ def train_test_split(
 ) -> tuple:
     """
     Per-user split: for each user, hold out test_ratio of their ratings.
-
-    Why per-user (not random row split)?
-      - A random row split might put ALL of a user's ratings in test, leaving
-        nothing to compute similarity from. Per-user guarantees every user
-        has training data.
-      - In RecSys this is called leave-last-N-out evaluation. We'll use
-        a stricter time-ordered version in Phase 3.
     """
     rng = np.random.default_rng(random_state)
     train_rows, test_rows = [], []
@@ -182,7 +182,7 @@ def train_test_split(
 
 
 # --------------------------------------------------------------------------
-# 6. Sanity check — run this file directly to verify the pipeline
+# 6. Sanity check
 # --------------------------------------------------------------------------
 
 if __name__ == "__main__":
