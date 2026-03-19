@@ -138,7 +138,7 @@ python3 src/phase2/ann_index.py   # Mac: add KMP_DUPLICATE_LIB_OK=TRUE prefix
 ## References
 
 - Hu, Y., Koren, Y., & Volinsky, C. (2008). *Collaborative Filtering for Implicit Feedback Datasets*. ICDM.
-- He, X., et al. (2017). *Neural Collaborative Filtering*. WWW.
+- He, X., et al. (2017). *Neural Collaborative Filtering*.
 - Kang, W., & McAuley, J. (2018). *Self-Attentive Sequential Recommendation*. ICDM.
 - Hou, Y., et al. (2024). *Bridging Language and Items for Retrieval and Recommendation*. arXiv:2403.03952.
 
