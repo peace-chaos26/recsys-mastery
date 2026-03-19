@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+env/
+venv/
+
+# Secrets
+.env
+*.pem
+secrets.json
+
+# Data — never commit raw data files
+data/
+*.csv
+*.json.gz
+*.parquet
+*.pkl
+
+# Model artifacts
+outputs/
+models/
+*.pt
+*.bin
+*.safetensors
+*.npy
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Experiment tracking
+mlruns/
+wandb/
